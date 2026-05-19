@@ -1,0 +1,47 @@
+name: CI Code Quality & Unit Tests
+
+# Run this workflow every time you push code to the main branch
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test_and_lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        # Installs project requirements plus pytest for running our tests
+        run: |
+          pip install -r requirements.txt
+          pip install pytest httpx flake8
+
+      - name: Check for Syntax Errors (Flake8)
+        # This will fail the pipeline if there are major Python syntax errors
+        run: |
+          flake8 src/ api/ --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run Unit Tests (Pytest)
+        # We pass dummy environment variables just so the tests don't crash 
+        # when looking for database or AWS keys during the initialization phase.
+        env:
+          DB_HOST: "mock_host"
+          DB_NAME: "mock_db"
+          DB_USER: "mock_user"
+          DB_PASSWORD: "mock_password"
+          API_AUTH_SECRET: "test_secret_key"
+        run: |
+          pytest tests/ -v
