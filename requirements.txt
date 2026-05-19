@@ -1,0 +1,10 @@
+pytest
+fastapi
+uvicorn
+requests
+pandas
+scikit-learn
+psycopg2-binary
+sqlalchemy
+xgboost>=2.0.3
+lightgbm>=4.3.0

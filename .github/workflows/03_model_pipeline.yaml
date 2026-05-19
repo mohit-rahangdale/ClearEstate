@@ -1,0 +1,118 @@
+name: Model Retraining & Deployment Pipeline
+
+on:
+  workflow_dispatch:   # Manual trigger
+  workflow_call:       # Allows the data pipeline to trigger this workflow automatically
+
+jobs:
+  train_and_evaluate:
+    runs-on: ubuntu-latest
+    # Define outputs so the deploy job knows whether to run
+    outputs:
+      deploy_approved: ${{ steps.eval_step.outputs.deploy_approved }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Important for DVC and Git commits
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Setup DVC (Data Version Control)
+        uses: iterative/setup-dvc@v1
+
+      - name: Train Multi-Task Ensembles
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+        run: python src/train.py
+
+      - name: Evaluate Champion vs Challenger
+        id: eval_step
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+        run: python src/evaluate.py
+
+      - name: Version Control Artifacts with DVC
+        # Only track new artifacts if the model is approved for production
+        if: steps.eval_step.outputs.deploy_approved == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        run: |
+          # DVC tracks the heavy .joblib files and pushes them to S3
+          dvc add artifacts/
+          dvc push
+          
+          # Commit the lightweight DVC pointer files back to Git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add artifacts.dvc .gitignore
+          git commit -m "Auto-update model artifacts via CI [skip ci]" || echo "No changes to commit"
+          git push
+
+      - name: Temporarily Store Artifacts for Docker Build
+        if: steps.eval_step.outputs.deploy_approved == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-model-artifacts
+          path: artifacts/
+          retention-days: 1
+
+  build_and_deploy:
+    needs: train_and_evaluate
+    # STRICT GATE: Only run this job if evaluate.py said deploy_approved=true
+    if: needs.train_and_evaluate.outputs.deploy_approved == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Approved Model Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: production-model-artifacts
+          path: artifacts/
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push Docker Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: real-estate-intelligence-api
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # The Dockerfile will copy the artifacts/ folder we just downloaded
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY -a
+
+      # --- Final Deployment Step ---
+      # Depending on your AWS architecture, you would add an action here to update 
+      # AWS App Runner, ECS Fargate, or EKS to pull the new 'latest' image.
+      - name: Trigger AWS App Runner Update (Example)
+        run: |
+          echo "Triggering cloud deployment to pull the fresh container..."
+          # aws apprunner start-deployment --service-arn YOUR_SERVICE_ARN
