@@ -62,7 +62,7 @@ def train_and_log():
         clf_model = build_classification_ensemble()
         clf_model.fit(X_train, y_train_clf)
         
-        # --- Evaluation ---
+        # Evaluation 
         print("Evaluating Models...")
         reg_preds = reg_model.predict(X_test)
         clf_preds = clf_model.predict(X_test)
@@ -87,7 +87,7 @@ def train_and_log():
             "clf_f1": f1
         })
         
-        # 2. Log Model Artifacts (The actual `.pkl` files are securely stored by MLflow)
+        # 2. Log Model Artifacts (The actual .pkl files are securely stored by MLflow)
         mlflow.sklearn.log_model(reg_model, "regression_ensemble")
         mlflow.sklearn.log_model(clf_model, "classification_ensemble")
         
